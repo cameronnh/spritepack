@@ -6,9 +6,10 @@ use clap::{Parser, Subcommand};
 use inquire::Select;
 use log::{error, Level, LevelFilter};
 use spritepack::{
-    discover_sprite_set_folders, find_spritepack_toml, folder_label_relative, load_config,
-    module_local_name_from_require_path, normalize_require_path, pack_folder,
-    resolve_against_config, PackOptions, RequireInfo, MAX_SHEET_HEIGHT, MAX_SHEET_WIDTH,
+    compute_nesting_keys, discover_sprite_set_folders, find_asphalt_toml, find_spritepack_toml,
+    folder_label_relative, load_config, module_local_name_from_require_path,
+    normalize_require_path, pack_folder, resolve_against_config, PackOptions, RequireInfo,
+    MAX_SHEET_HEIGHT, MAX_SHEET_WIDTH,
 };
 use std::io::{self, BufRead, IsTerminal, Write};
 
@@ -125,7 +126,10 @@ fn prompt_cell_size(max_sheet_w: u32, max_sheet_h: u32) -> Result<(u32, u32)> {
 }
 
 /// Build `RequireInfo` from the optional `require_path` in config.
-fn resolve_require(raw: Option<&str>) -> Result<Option<RequireInfo>> {
+fn resolve_require(
+    raw: Option<&str>,
+    nesting_keys: Vec<String>,
+) -> Result<Option<RequireInfo>> {
     let raw = match raw {
         Some(s) if !s.trim().is_empty() => s,
         _ => return Ok(None),
@@ -138,6 +142,7 @@ fn resolve_require(raw: Option<&str>) -> Result<Option<RequireInfo>> {
     Ok(Some(RequireInfo {
         require_path,
         local_name,
+        nesting_keys,
     }))
 }
 
@@ -170,7 +175,53 @@ fn run_command(
         .as_deref()
         .map(|p| resolve_against_config(&cfg_path, p));
 
-    let require = resolve_require(cfg.paths.require_path.as_deref())?;
+    let nesting_keys = if cfg.paths.require_path.is_some() {
+        let cfg_dir = cfg_path.parent().unwrap_or_else(|| std::path::Path::new("."));
+        match find_asphalt_toml(cfg_dir) {
+            Some(asphalt_path) => {
+                let module_name = cfg
+                    .paths
+                    .require_path
+                    .as_deref()
+                    .and_then(|r| {
+                        let norm = normalize_require_path(r);
+                        module_local_name_from_require_path(&norm).ok()
+                    })
+                    .unwrap_or_default();
+                if module_name.is_empty() {
+                    Vec::new()
+                } else {
+                    match compute_nesting_keys(
+                        &asphalt_path,
+                        &module_name,
+                        &cfg.paths.sheet_output_path,
+                    ) {
+                        Ok(keys) => {
+                            if !keys.is_empty() {
+                                log::info!(
+                                    "asphalt nesting detected: {}{}",
+                                    module_name,
+                                    keys.iter()
+                                        .map(|k| format!("[\"{k}\"]"))
+                                        .collect::<String>()
+                                );
+                            }
+                            keys
+                        }
+                        Err(e) => {
+                            log::warn!("could not read asphalt.toml for nesting detection: {e:#}");
+                            Vec::new()
+                        }
+                    }
+                }
+            }
+            None => Vec::new(),
+        }
+    } else {
+        Vec::new()
+    };
+
+    let require = resolve_require(cfg.paths.require_path.as_deref(), nesting_keys)?;
 
     if data_out.is_none() {
         log::warn!("paths.data_output_path is not set — no .luau data files will be written");

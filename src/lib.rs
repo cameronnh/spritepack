@@ -1,8 +1,10 @@
+mod asphalt;
 mod config;
 mod luau;
 mod similarity;
 mod spritesheet;
 
+pub use asphalt::{compute_nesting_keys, find_asphalt_toml};
 pub use config::{
     module_local_name_from_require_path, normalize_require_path, Paths, RequireInfo,
     SpritepackConfig,

@@ -39,8 +39,13 @@ pub fn render_module(
         let sheet_idx = i + 1;
         let escaped = escape_luau_table_string_key(key);
         if let Some(req) = p.require {
+            let nesting: String = req
+                .nesting_keys
+                .iter()
+                .map(|k| format!("[\"{}\"]", escape_luau_table_string_key(k)))
+                .collect();
             out.push_str(&format!(
-                "\t\t[{sheet_idx}] = {}[\"{escaped}\"],\n",
+                "\t\t[{sheet_idx}] = {}{nesting}[\"{escaped}\"],\n",
                 req.local_name
             ));
         } else {
@@ -120,10 +125,11 @@ mod tests {
     use crate::config::RequireInfo;
 
     #[test]
-    fn module_with_require() {
+    fn module_with_require_no_nesting() {
         let req = RequireInfo {
             require_path: "@game/ReplicatedStorage/Test/FromAsphalt".into(),
             local_name: "FromAsphalt".into(),
+            nesting_keys: vec![],
         };
         let p = LuauModuleParams {
             module_ident: "TestSheet",
@@ -144,6 +150,30 @@ mod tests {
         );
         assert!(s.contains("[1] = FromAsphalt[\"TestSheet_1\"],"));
         assert!(s.contains("return TestSheet"));
+    }
+
+    #[test]
+    fn module_with_require_nested() {
+        let req = RequireInfo {
+            require_path: "@game/ReplicatedStorage/Shared/Assets/ImagesIds".into(),
+            local_name: "ImagesIds".into(),
+            nesting_keys: vec!["Spritesheets".into()],
+        };
+        let p = LuauModuleParams {
+            module_ident: "TestSheet",
+            require: Some(&req),
+            cell_width: 128,
+            cell_height: 128,
+            columns: 8,
+        };
+        let s = render_module(
+            &p,
+            &["TestSheet_1".to_string(), "TestSheet_2".to_string()],
+            &[("Sprite_A".to_string(), 1, 1)],
+        )
+        .unwrap();
+        assert!(s.contains(r#"[1] = ImagesIds["Spritesheets"]["TestSheet_1"],"#));
+        assert!(s.contains(r#"[2] = ImagesIds["Spritesheets"]["TestSheet_2"],"#));
     }
 
     #[test]

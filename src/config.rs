@@ -74,6 +74,9 @@ pub struct RequireInfo {
     pub require_path: String,
     /// Luau local name derived from `require_path`, e.g. `FromAsphalt`.
     pub local_name: String,
+    /// Intermediate table keys between the module local and the sheet key.
+    /// E.g. `["Spritesheets"]` produces `ImagesIds["Spritesheets"]["Sheet_1"]`.
+    pub nesting_keys: Vec<String>,
 }
 
 #[cfg(test)]
