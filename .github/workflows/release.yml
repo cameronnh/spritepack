@@ -1,0 +1,134 @@
+name: Release
+
+on:
+  push:
+    tags: ["*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing git tag to release (e.g. v1.0.0). Must be pushed to the remote."
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  create-release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${{ env.RELEASE_TAG }}"
+          echo "Release tag: $tag"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $tag already exists."
+          else
+            gh release create "$tag" \
+              --draft \
+              --title "$tag" \
+              --verify-tag \
+              --generate-notes \
+              --repo "$GITHUB_REPOSITORY"
+          fi
+
+  release:
+    needs: [create-release]
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            artifact-name: spritepack-win64
+            cargo-target: x86_64-pc-windows-msvc
+          - os: ubuntu-22.04
+            artifact-name: spritepack-linux-x86_64
+            cargo-target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            artifact-name: spritepack-linux-aarch64
+            cargo-target: aarch64-unknown-linux-gnu
+          - os: macos-latest
+            artifact-name: spritepack-macos
+            cargo-target: x86_64-apple-darwin
+          - os: macos-latest
+            artifact-name: spritepack-macos-aarch64
+            cargo-target: aarch64-apple-darwin
+
+    name: Build (${{ matrix.artifact-name }})
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.cargo-target }}
+
+      - name: Build Binary (All features)
+        run: cargo build --verbose --locked --release --all-features --target ${{ matrix.cargo-target }}
+        env:
+          CARGO_TARGET_DIR: output
+
+      - name: Setup Archive + Extension
+        shell: bash
+        env:
+          ARTIFACT_ZIP: ${{ matrix.artifact-name }}.zip
+        run: |
+          mkdir -p staging
+
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            cp "output/${{ matrix.cargo-target }}/release/spritepack.exe" staging/
+            cd staging
+            7z a "../$ARTIFACT_ZIP" *
+          else
+            cp "output/${{ matrix.cargo-target }}/release/spritepack" staging/
+            cd staging
+            zip "../$ARTIFACT_ZIP" *
+          fi
+
+      - name: Upload workflow artifact (download from Actions UI)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact-name }}
+          path: ${{ matrix.artifact-name }}.zip
+
+  attach-to-release:
+    name: Attach binaries to GitHub Release
+    needs: [create-release, release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all build zips
+        uses: actions/download-artifact@v4
+        with:
+          path: zips
+          pattern: spritepack-*
+          merge-multiple: false
+
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${{ env.RELEASE_TAG }}"
+          echo "Attaching artifacts to release $tag (repo=$GITHUB_REPOSITORY)"
+          mapfile -t files < <(find zips -type f -name '*.zip' | sort)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No zip files under zips/ — download-artifact layout may have changed." >&2
+            find zips -type f 2>/dev/null || true
+            exit 1
+          fi
+          gh release upload "$tag" "${files[@]}" --clobber --repo "$GITHUB_REPOSITORY"
